@@ -1,0 +1,234 @@
+// This #include statement was automatically added by the Particle IDE.
+//#include <thermistor-library.h>
+
+// This #include statement was automatically added by the Particle IDE.
+#include "thermistor-library/thermistor-library.h"
+
+//Parameters
+
+
+//Inital dose when device is turned on
+int initial_dose = 80; //mL 
+
+//Size of resovoir
+int resovoir_size = 600; //mL
+
+//This amount of water will be injected for each degree deviation from setpoint
+int adjustment_dose_ml_per_degree = 5; //mL per degree
+
+//Desired temperature
+float target_temp = 32; // degrees F
+
+//Time between temperature evaluation after initial check.
+int seconds_per_temp_evaluation = 10; //Seconds
+
+//Time after initial dose before temperature evaluations begin.
+int initial_cooldown_seconds = 20; //Seconds
+
+//Time after adjustment dose before temperature evaluations begin
+int adjustment_cooldown_seconds = 5; //Seconds
+
+
+/*
+No need to change anything below here
+_____________________________________
+*/
+
+float seconds_to_ml = 0.463;
+
+//variables
+float adjustment_dose = 0;
+float seconds_to_run = 0;
+int amount_dispensed = 0;
+float temperature_deviation = 0;
+int current_resovoir_volume = 0;
+int thermRes = 6400;
+float current_temperature = 0;
+
+int DEBUG_THERMISTORS = false;
+
+//Input / Output
+int outputStandby           = D0;
+int outputMotorOne          = D1;
+int outputMotorTwo          = D2;
+int inputOnSwitch              = D3;
+int outputLED               = D7;
+int outputAnalogMotorSpeed  = A0;
+int inputAnalogThermistor1  = A1;
+int inputAnalogThermistor2  = A2;
+int inputAnalogThermistor3  = A3;
+int inputAnalogThermistor4  = A4;
+int inputAnalogThermistor5  = A5;
+
+
+//Status bits
+int motorRunning = false;
+int motorStandby = false;
+int btnOnSwitch = false;
+int frostyActive = false;
+
+// Setup objects
+Thermistor Thermistor1(inputAnalogThermistor1, thermRes);
+Thermistor Thermistor2(inputAnalogThermistor2, thermRes);
+Thermistor Thermistor3(inputAnalogThermistor3, thermRes);
+Thermistor Thermistor4(inputAnalogThermistor4, thermRes);
+Thermistor Thermistor5(inputAnalogThermistor5, thermRes);
+Timer PumpTimer(1000, pump_timer_end, true);
+Timer TempTimer(seconds_per_temp_evaluation * 1000, evaluate_temperature);
+
+void pump_timer_end(){
+    stop_motor();
+    current_resovoir_volume = current_resovoir_volume - amount_dispensed;
+    
+    Particle.publish("Pump cycle has ended resovoir volume: " + (String)current_resovoir_volume + "mL");
+    
+    if(amount_dispensed == initial_dose){
+        delay(initial_cooldown_seconds * 1000);
+    }else{
+        delay(adjustment_cooldown_seconds * 1000);
+    }
+    
+    //Start temperature action timer
+    if(frostyActive)
+        TempTimer.start();
+}
+void evaluate_temperature(){
+    
+    current_temperature = get_temperature();
+    
+    if(current_temperature > target_temp){
+        temperature_deviation = current_temperature - target_temp;
+        if(temperature_deviation > 1.0)
+            apply_adjustment_dose();
+    }
+}
+float get_temperature(){
+    float calibration_factor  = 21;
+    float temperature;
+    float current_temperature_1 = Thermistor1.getTempF(true) - calibration_factor;
+    float current_temperature_2 = Thermistor2.getTempF(true) - calibration_factor;
+    float current_temperature_3 = Thermistor3.getTempF(true) - calibration_factor;
+    float current_temperature_4 = Thermistor4.getTempF(true) - calibration_factor;
+    float current_temperature_5 = Thermistor5.getTempF(true) - calibration_factor;
+    
+    temperature = (current_temperature_1 + current_temperature_2 + current_temperature_3 ) / 3;
+    
+    
+    Particle.publish("T1:" + (String)(int)current_temperature_1 + "F" + " T2:" + (String)(int)current_temperature_2 + "F"+ " T3:" + (String)(int)current_temperature_3 + "F"+ " T4:" + (String)(int)current_temperature_4 + "F"+ " T5:" + (String)(int)current_temperature_5 + "F"  )  ;
+    Particle.publish("Temp:" + (String)temperature + "F");
+    
+    return temperature;
+}
+
+void apply_adjustment_dose(){
+    
+    if(motorRunning){
+        return;
+    }
+    
+    adjustment_dose = adjustment_dose_ml_per_degree * temperature_deviation;
+    
+    if(current_resovoir_volume < adjustment_dose){
+        Particle.publish("Adjustment dose is higher than volume in resovoir. ");
+        return;
+    }
+    
+    seconds_to_run = adjustment_dose * seconds_to_ml ;
+    amount_dispensed = adjustment_dose;
+    Particle.publish("Deviation: " + (String)temperature_deviation + "F Adjustment: " + (String)adjustment_dose + "mL");
+    PumpTimer.changePeriod(seconds_to_run * 1000);
+    //Start timer and pump
+    PumpTimer.start();
+    start_motor();
+    //stop temp timer, we don't want to adjust temp while are pumping
+    TempTimer.stop();
+}
+
+void starting_dose(){
+    seconds_to_run = initial_dose * seconds_to_ml ;
+    amount_dispensed = initial_dose;
+    Particle.publish("Dispensing: " + (String)initial_dose + "mL");
+    PumpTimer.changePeriod(seconds_to_run * 1000);
+    
+    //Start timer and pump
+    PumpTimer.start();
+    start_motor();
+}
+
+void start_motor(){
+  motorRunning = true;
+  enable_motor();
+  digitalWrite(outputMotorOne, HIGH);
+  digitalWrite(outputMotorTwo, LOW);
+}
+void stop_motor(){  
+  PumpTimer.stop();
+  motorRunning = false;
+  digitalWrite(outputMotorOne, LOW);
+  digitalWrite(outputMotorTwo, LOW);
+  disable_motor();
+}
+void enable_motor(){
+  digitalWrite(outputStandby, HIGH);
+}
+void disable_motor(){
+    motorRunning = false;
+    digitalWrite(outputStandby, LOW);
+}
+
+
+void setup() {  
+  //set pin modes
+  pinMode(outputAnalogMotorSpeed,OUTPUT);
+  pinMode(outputStandby,OUTPUT);
+  pinMode(outputLED,OUTPUT);
+  pinMode(outputMotorOne,OUTPUT);
+  pinMode(outputMotorTwo,OUTPUT);  
+  pinMode(inputOnSwitch,INPUT_PULLUP);   
+  
+  Thermistor1.begin();
+  Thermistor2.begin();
+
+  disable_motor();
+  Particle.publish("Let us get frosty");
+}
+
+void loop() {
+  
+  if(digitalRead(inputOnSwitch) == LOW){
+      btnOnSwitch = true;
+  }else{
+      btnOnSwitch = false;
+  }
+  if(btnOnSwitch){
+	if(btnOnSwitch && !motorRunning && !frostyActive){
+		frostyActive = true;
+		Particle.publish("Frosty Active");
+		current_resovoir_volume = resovoir_size;
+		starting_dose();
+	}  
+  }else{
+    if(frostyActive){
+    	frostyActive = false;
+    	Particle.publish("Frosty InActive");
+    }
+    TempTimer.stop();
+    if(motorRunning){
+		stop_motor();
+	}
+  }  
+  
+  if(frostyActive){
+      digitalWrite(outputLED, HIGH);
+  }else{
+      digitalWrite(outputLED, LOW);
+  }
+  //DEBUG CODE
+  if(DEBUG_THERMISTORS){
+    get_temperature();
+    delay(5000); 
+  }else{
+    delay(100);
+  }
+  
+}
